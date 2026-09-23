@@ -37,8 +37,9 @@ if git ls-remote --exit-code --tags "$remote" "refs/tags/$release" > /dev/null; 
   # binary URLs never resolved.
   git push --quiet "$remote" ":refs/tags/$release"
 fi
-git tag "$release" "$commit"
-git push --quiet "$remote" "refs/tags/$release"
+# Push the commit straight to the tag ref: the upstream clone already has a
+# local tag of the same name (upstream's own), which must stay untouched.
+git push --quiet "$remote" "$commit:refs/tags/$release"
 
 title="$(python3 "$here/notes.py" --upstream-tag "$tag" --upstream-sha "$sha" \
   --release "$release" --repo "$repo" \
