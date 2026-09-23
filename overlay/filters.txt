@@ -1,0 +1,13 @@
+# FFmpeg filters the ramus spectrum tap needs that upstream MPVKit's
+# configure allowlist leaves out. One name per line; blank lines and
+# comments are ignored.
+asplit
+asetnsamples
+channelsplit
+bandpass
+join
+amultiply
+lowpass
+aeval
+ashowinfo
+anullsink

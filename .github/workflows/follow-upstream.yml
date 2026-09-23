@@ -1,0 +1,98 @@
+name: Follow upstream
+
+# Rebuilds each new upstream MPVKit stable release with the extra FFmpeg
+# filters in overlay/filters.txt. Only `run:` steps (git, gh, python3 and
+# the build tools upstream needs), so there are no action versions to bump.
+
+on:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: 'Upstream MPVKit tag to build (default: latest stable release)'
+        default: ''
+      suffix:
+        description: 'Suffix for a rebuild of an already-published tag, e.g. -r2'
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: follow-upstream
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      tag: ${{ steps.decide.outputs.tag }}
+      release: ${{ steps.decide.outputs.release }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      INPUT_TAG: ${{ inputs.upstream_tag }}
+      INPUT_SUFFIX: ${{ inputs.suffix }}
+    steps:
+      - name: Fetch this repository
+        run: git clone --quiet --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" self
+
+      - name: Decide what to build
+        id: decide
+        run: |
+          tag="${INPUT_TAG:-$(gh api repos/mpvkit/MPVKit/releases/latest --jq .tag_name)}"
+          release="$(python3 self/overlay/releases.py name "$tag" "$INPUT_SUFFIX")"
+          state="$(python3 self/overlay/releases.py state "$GITHUB_REPOSITORY" "$release")"
+          build=false
+          if [ "$state" = missing ]; then build=true; fi
+          {
+            echo "tag=$tag"
+            echo "release=$release"
+            echo "build=$build"
+          } >> "$GITHUB_OUTPUT"
+          echo "Upstream \`$tag\` → release \`$release\` ($state): build=$build" >> "$GITHUB_STEP_SUMMARY"
+
+      # GitHub disables scheduled workflows in a public repository after 60
+      # days without commits; a weekly run commits before that happens.
+      - name: Keepalive
+        working-directory: self
+        run: |
+          age_days=$(( ( $(date +%s) - $(git log -1 --format=%ct) ) / 86400 ))
+          if [ "$age_days" -ge 45 ]; then
+            date -u +%F > .keepalive
+            git add .keepalive
+            git -c user.name='github-actions[bot]' \
+                -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+                commit --quiet -m keepalive
+            git push --quiet origin HEAD
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.check.outputs.tag }}
+      RELEASE: ${{ needs.check.outputs.release }}
+    steps:
+      - name: Fetch this repository at the workflow commit
+        run: |
+          git init --quiet self
+          git -C self fetch --quiet --depth 1 "https://github.com/${GITHUB_REPOSITORY}.git" "$GITHUB_SHA"
+          git -C self checkout --quiet FETCH_HEAD
+
+      - name: Install build tools
+        run: brew install autoconf automake libtool ninja wget
+
+      - name: Build and verify
+        run: self/overlay/build.sh "$TAG" "$RELEASE" "$GITHUB_REPOSITORY" "$RUNNER_TEMP/work"
+
+      - name: Publish
+        run: self/overlay/publish.sh "$TAG" "$RELEASE" "$GITHUB_REPOSITORY" "$RUNNER_TEMP/work"
